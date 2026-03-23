@@ -822,6 +822,18 @@ const LAYOUTS=[
   {id:'strip5',  name:'Strip 5', cols:1,rows:5, fw:320,fh:200,pad:12,gap:7, footH:55},
   {id:'grid2x3', name:'2×3',     cols:2,rows:3, fw:240,fh:180,pad:10,gap:6, footH:50},
   {id:'featured',name:'Feature', cols:2,rows:2, fw:280,fh:210,pad:12,gap:7, footH:52,special:'featured'},
+  {
+  id:'hero2',
+  name:'Hero + 2',
+  cols:2,
+  rows:2,
+  fw:280,
+  fh:210,
+  pad:12,
+  gap:7,
+  footH:52,
+  special:'hero2'
+},
 ];
 
 const COLORS=[
@@ -872,32 +884,110 @@ function buildFilters(){
 }
 
 function buildLayouts(){
-  const g=$('#layoutGrid');g.innerHTML='';
+  const g = $('#layoutGrid');
+  g.innerHTML = '';
+
   LAYOUTS.forEach(l=>{
-    const d=document.createElement('div');d.className='lo'+(l.id===S.layout?' on':'');d.dataset.id=l.id;
-    const prev=document.createElement('div');prev.style.display='flex';
-    if(l.cols>1&&l.rows===1){prev.style.flexDirection='row';prev.style.gap='2px';}
-    else{prev.style.flexDirection='column';prev.style.gap='2px';}
-    const maxCells=Math.min(l.cols*l.rows,6);
-    for(let i=0;i<maxCells;i++){
-      if(l.cols>1&&l.rows>1){
-        const row=i%l.cols===0?document.createElement('div'):null;
-        if(row){row.style.display='flex';row.style.gap='2px';prev.appendChild(row);}
-        const cell=document.createElement('div');cell.className='lpc';cell.style.width='12px';cell.style.height='9px';
-        (prev.lastChild instanceof HTMLDivElement?prev.lastChild:prev).appendChild(cell);
-      } else if(l.rows===1){
-        const cell=document.createElement('div');cell.className='lpc';cell.style.width='10px';cell.style.height='20px';prev.appendChild(cell);
-      } else {
-        const cell=document.createElement('div');cell.className='lpc';cell.style.width='28px';cell.style.height='10px';prev.appendChild(cell);
+    const d = document.createElement('div');
+    d.className = 'lo' + (l.id===S.layout ? ' on':'');
+    d.dataset.id = l.id;
+
+    const prev = document.createElement('div');
+    prev.style.display = 'flex';
+    prev.style.gap = '2px';
+
+    if(l.special === 'hero2'){
+      prev.style.flexDirection = 'column';
+
+      const top = document.createElement('div');
+      top.style.display = 'flex';
+      top.style.justifyContent = 'center';
+
+      const big = document.createElement('div');
+      big.className = 'lpc';
+      big.style.width = '28px';
+      big.style.height = '18px';
+
+      top.appendChild(big);
+
+      const bottom = document.createElement('div');
+      bottom.style.display = 'flex';
+      bottom.style.justifyContent = 'center';
+      bottom.style.gap = '2px';
+
+      for(let i=0;i<2;i++){
+        const small = document.createElement('div');
+        small.className = 'lpc';
+        small.style.width = '13px';
+        small.style.height = '10px';
+        bottom.appendChild(small);
+      }
+
+      prev.append(top, bottom);
+    }
+
+    else if(l.cols > 1 && l.rows === 1){
+      prev.style.flexDirection = 'row';
+
+      const maxCells = Math.min(l.cols * l.rows, 6);
+      for(let i=0;i<maxCells;i++){
+        const cell = document.createElement('div');
+        cell.className = 'lpc';
+        cell.style.width = '10px';
+        cell.style.height = '20px';
+        prev.appendChild(cell);
       }
     }
-    const lbl=document.createElement('div');lbl.className='lo-name';lbl.textContent=l.name;
-    d.append(prev,lbl);
-    d.addEventListener('click',()=>{
-      S.layout=l.id;
-      document.querySelectorAll('.lo').forEach(el=>el.classList.toggle('on',el.dataset.id===l.id));
-      if(S.photos.length)renderStrip();
+
+    // =========================
+    // DEFAULT (GRID / VERTICAL)
+    // =========================
+    else{
+      prev.style.flexDirection = 'column';
+
+      const maxCells = Math.min(l.cols * l.rows, 6);
+
+      for(let i=0;i<maxCells;i++){
+        if(l.cols > 1 && l.rows > 1){
+          const row = i % l.cols === 0 ? document.createElement('div') : null;
+
+          if(row){
+            row.style.display = 'flex';
+            row.style.gap = '2px';
+            prev.appendChild(row);
+          }
+
+          const cell = document.createElement('div');
+          cell.className = 'lpc';
+          cell.style.width = '12px';
+          cell.style.height = '9px';
+
+          prev.lastChild.appendChild(cell);
+        } 
+        else {
+          const cell = document.createElement('div');
+          cell.className = 'lpc';
+          cell.style.width = '28px';
+          cell.style.height = '10px';
+          prev.appendChild(cell);
+        }
+      }
+    }
+
+    const lbl = document.createElement('div');
+    lbl.className = 'lo-name';
+    lbl.textContent = l.name;
+
+    d.append(prev, lbl);
+
+    d.addEventListener('click', ()=>{
+      S.layout = l.id;
+      document.querySelectorAll('.lo').forEach(el =>
+        el.classList.toggle('on', el.dataset.id === l.id)
+      );
+      if(S.photos.length) renderStrip();
     });
+
     g.appendChild(d);
   });
 }
@@ -1422,7 +1512,15 @@ function getPhotoPos(cfg,i,totalW,totalH){
   } else if(special==='featured'){
     if(i===0){x=PAD;y=PAD;iw=totalW-PAD*2;ih=FH;}
     else{const adj=i-1;x=PAD+adj*((totalW-PAD*2)/2+(GAP/2));y=PAD+FH+GAP;iw=(totalW-PAD*2)/2;ih=FH*.75;}
+  } else if(special==='hero2'){
+  if(i===0){
+    x = PAD; y = PAD; iw = totalW - PAD*2; ih = FH * 1.2;
   } else {
+    const adj = i - 1;
+    const smallW = (totalW - PAD*2 - GAP) / 2;
+    x = PAD + adj * (smallW + GAP); y = PAD + (FH * 1.2) + GAP; iw = smallW; ih = FH * 0.8;
+  }
+} else {
     const col=i%cols, row=Math.floor(i/cols);
     x=PAD+col*(FW+GAP);y=PAD+row*(FH+GAP);iw=FW;ih=FH;
   }
