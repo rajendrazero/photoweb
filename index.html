@@ -1360,17 +1360,20 @@ async function startMPLoop(){
 function stopMPLoop(){_mpRunning=false;_mpResults=null;}
 
 /* ═══════ VIDEO RECORDING ═══════ */
-let _preRecChunks = [], _preRecRecorder = null, _preRecStream = null;
+let _preRecChunks = [], _preRecRecorder = null;
+let _recordingStartTime = null;
+let _recordingTimer = null;
 
 function startPreRecording() {
   if (!S.stream || !S.autoRecord) return;
   
-  // Stop existing recorder
+  // Stop existing recorder if any
   if (_preRecRecorder && _preRecRecorder.state !== 'inactive') {
     try { _preRecRecorder.stop(); } catch(e) {}
   }
   
   _preRecChunks = [];
+  _recordingStartTime = Date.now();
   
   // Get supported mime type
   const mimeTypes = [
@@ -1390,12 +1393,11 @@ function startPreRecording() {
   }
   
   if (!mimeType) {
-    console.warn('No supported mime type found, using default');
     mimeType = 'video/webm';
   }
   
   try {
-    // Create a new MediaStream with only video track (avoid audio issues)
+    // Get video track only for better compatibility
     const videoTrack = S.stream.getVideoTracks()[0];
     if (!videoTrack) throw new Error('No video track');
     
@@ -1403,7 +1405,7 @@ function startPreRecording() {
     
     _preRecRecorder = new MediaRecorder(newStream, {
       mimeType: mimeType,
-      videoBitsPerSecond: 2500000 // 2.5 Mbps for better quality
+      videoBitsPerSecond: 2500000 // 2.5 Mbps
     });
     
     _preRecRecorder.ondataavailable = (e) => {
@@ -1414,17 +1416,23 @@ function startPreRecording() {
     
     _preRecRecorder.onerror = (e) => {
       console.error('Recorder error:', e);
-      showToast('⚠️ Gagal merekam video');
     };
     
-    // Record in 500ms chunks for better performance
+    // Start recording with 500ms chunks
     _preRecRecorder.start(500);
     preRecBadge.classList.add('show');
     navRecInd.classList.add('on');
     
+    // Set timer to stop recording after 5 seconds
+    _recordingTimer = setTimeout(() => {
+      if (_preRecRecorder && _preRecRecorder.state === 'recording') {
+        // Don't stop immediately, wait for photo capture
+        // The photo will trigger the stop
+      }
+    }, 5000);
+    
   } catch (e) {
     console.error('Failed to start recorder:', e);
-    showToast('⚠️ Tidak bisa merekam video: ' + e.message);
     _preRecRecorder = null;
   }
 }
@@ -1436,10 +1444,16 @@ function stopPreRecording() {
       return;
     }
     
+    // Clear the timer if it exists
+    if (_recordingTimer) {
+      clearTimeout(_recordingTimer);
+      _recordingTimer = null;
+    }
+    
     const chunks = [..._preRecChunks];
+    const recordingDuration = _recordingStartTime ? (Date.now() - _recordingStartTime) : 0;
     
     _preRecRecorder.onstop = () => {
-      // Combine all chunks
       const allChunks = [...chunks];
       
       if (allChunks.length === 0) {
@@ -1456,6 +1470,9 @@ function stopPreRecording() {
         return;
       }
       
+      // Show recording duration in console
+      console.log(`Video recorded: ${recordingDuration}ms, size: ${(blob.size/1024).toFixed(1)}KB`);
+      
       const reader = new FileReader();
       reader.onloadend = () => {
         resolve(reader.result);
@@ -1464,19 +1481,163 @@ function stopPreRecording() {
       reader.readAsDataURL(blob);
     };
     
-    // Small delay to ensure last frames are captured
-    setTimeout(() => {
-      try {
-        _preRecRecorder.stop();
-      } catch(e) {
-        console.error('Error stopping recorder:', e);
-        resolve(null);
-      }
-      _preRecRecorder = null;
-      preRecBadge.classList.remove('show');
-      navRecInd.classList.remove('on');
-    }, 200);
+    try {
+      _preRecRecorder.stop();
+    } catch(e) {
+      console.error('Error stopping recorder:', e);
+      resolve(null);
+    }
+    _preRecRecorder = null;
+    preRecBadge.classList.remove('show');
+    navRecInd.classList.remove('on');
+    _recordingStartTime = null;
   });
+}
+
+/* ═══════ TRIGGER SHUTTER — VIDEO BERJALAN BERSAMAAN COUNTDOWN ═══════ */
+async function triggerShutter() {
+  if (S.shooting || !S.stream) return;
+  S.shooting = true;
+  shutterBtn.disabled = true;
+  mShutter.disabled = true;
+
+  // Start recording IMMEDIATELY (will record up to 5 seconds)
+  let recordingPromise = null;
+  if (S.autoRecord) {
+    startPreRecording();
+    recordingPromise = new Promise(resolve => {
+      // This will resolve when video is captured, but we'll wait for photo first
+      setTimeout(() => {
+        stopPreRecording().then(videoData => {
+          if (videoData) {
+            S.currentVideoData = videoData;
+            showVideoPreview(videoData);
+            showToast('🎥 Video 5 detik tersimpan!');
+          }
+          resolve();
+        });
+      }, 100);
+    });
+  }
+
+  // Countdown (video is recording during this time)
+  if (S.delay > 0) {
+    countdown.style.opacity = '1';
+    for (let i = S.delay; i > 0; i--) {
+      countdown.textContent = i;
+      countdown.style.animation = 'none';
+      void countdown.offsetWidth;
+      countdown.style.animation = 'countPop .95s ease forwards';
+      await wait(950);
+    }
+    countdown.textContent = '';
+    countdown.style.opacity = '0';
+  }
+
+  // Capture photo RIGHT NOW (video stops at this moment)
+  capturePhoto();
+
+  // Wait a bit for video to be processed if recording
+  if (recordingPromise) {
+    await recordingPromise;
+  } else {
+    await wait(500);
+  }
+
+  S.shooting = false;
+  shutterBtn.disabled = false;
+  mShutter.disabled = false;
+}
+
+function updateRecordingIndicator() {
+  if (_recordingStartTime && S.autoRecord) {
+    const elapsed = Date.now() - _recordingStartTime;
+    const remaining = Math.max(0, 5000 - elapsed);
+    if (remaining > 0) {
+      const seconds = (remaining / 1000).toFixed(1);
+      preRecBadge.innerHTML = `⏺ ${seconds}s`;
+    } else {
+      preRecBadge.innerHTML = `⏺ 0s`;
+    }
+  }
+}
+
+// Add recording progress update
+setInterval(() => {
+  if (_recordingStartTime && preRecBadge.classList.contains('show')) {
+    const elapsed = Date.now() - _recordingStartTime;
+    const remaining = Math.max(0, 5000 - elapsed);
+    const seconds = (remaining / 1000).toFixed(1);
+    if (remaining > 0) {
+      preRecBadge.innerHTML = `🎬 ${seconds}s`;
+    } else {
+      preRecBadge.innerHTML = `🎬 0s`;
+    }
+  }
+}, 100);
+
+/* ═══════ ALTERNATIVE: RECORD EXACTLY 5 SECONDS FROM COUNTDOWN START ═══════ */
+// This version ensures video is exactly 5 seconds regardless of timer
+async function triggerShutterV2() {
+  if (S.shooting || !S.stream) return;
+  S.shooting = true;
+  shutterBtn.disabled = true;
+  mShutter.disabled = true;
+
+  let videoStopPromise = null;
+  let videoStartTime = null;
+  
+  if (S.autoRecord) {
+    // Start recording immediately
+    startPreRecording();
+    videoStartTime = Date.now();
+    
+    // Schedule video to stop after exactly 5 seconds from now
+    videoStopPromise = new Promise((resolve) => {
+      const stopTime = videoStartTime + 5000; // 5 seconds exactly
+      const checkStop = setInterval(() => {
+        if (Date.now() >= stopTime || S.shooting === false) {
+          clearInterval(checkStop);
+          stopPreRecording().then(videoData => {
+            if (videoData) {
+              S.currentVideoData = videoData;
+              showVideoPreview(videoData);
+              showToast('🎥 Video 5 detik selesai!');
+            }
+            resolve();
+          });
+        }
+      }, 100);
+    });
+  }
+
+  // Countdown (video recording continues during countdown)
+  if (S.delay > 0) {
+    countdown.style.opacity = '1';
+    for (let i = S.delay; i > 0; i--) {
+      countdown.textContent = i;
+      countdown.style.animation = 'none';
+      void countdown.offsetWidth;
+      countdown.style.animation = 'countPop .95s ease forwards';
+      await wait(950);
+    }
+    countdown.textContent = '';
+    countdown.style.opacity = '0';
+  }
+
+  // Capture photo
+  capturePhoto();
+  
+  // Wait for video to finish if auto-record is on
+  if (videoStopPromise) {
+    await videoStopPromise;
+  } else {
+    await wait(500);
+  }
+
+  S.shooting = false;
+  shutterBtn.disabled = false;
+  mShutter.disabled = false;
 }
 
 /* ═══════ CAPTURE ═══════ */
@@ -1747,8 +1908,10 @@ function showStripPreview(url){
   el.onclick=()=>openLightboxDirect(url,S.currentVideoData);
 }
 
+
+/* ═══════ VIDEO PREVIEW IMPROVED ═══════ */
 function showVideoPreview(videoDataUrl) {
-  if (!videoDataUrl || videoDataUrl.length < 100) return;
+  if (!videoDataUrl || videoDataUrl.length < 500) return;
   
   let wrap = stripPrev.querySelector('.strip-vid-wrap');
   if (!wrap) {
@@ -1758,7 +1921,7 @@ function showVideoPreview(videoDataUrl) {
     
     const lbl = document.createElement('div');
     lbl.className = 'vid-overlay-label';
-    lbl.textContent = '🎬 Video Sesi';
+    lbl.textContent = '🎬 Video 5 Detik';
     lbl.style.cssText = 'position:absolute;bottom:4px;left:6px;font-size:.48rem;letter-spacing:.1em;text-transform:uppercase;color:rgba(255,255,255,.6);background:rgba(0,0,0,.5);padding:.15rem .35rem;border-radius:1px;z-index:1;';
     
     const vid = document.createElement('video');
@@ -1769,14 +1932,18 @@ function showVideoPreview(videoDataUrl) {
     vid.muted = false;
     vid.preload = 'metadata';
     
+    const durationSpan = document.createElement('div');
+    durationSpan.style.cssText = 'position:absolute;top:5px;right:70px;font-size:.45rem;color:rgba(255,255,255,.7);background:rgba(0,0,0,.5);padding:.12rem .3rem;border-radius:1px;z-index:1;';
+    
     const dlbtn = document.createElement('button');
     dlbtn.className = 'vid-download-btn';
-    dlbtn.textContent = '⬇ Unduh';
+    dlbtn.textContent = '⬇';
     dlbtn.style.cssText = 'position:absolute;top:5px;right:5px;font-size:.5rem;letter-spacing:.1em;text-transform:uppercase;color:var(--bg0);background:rgba(212,168,67,.85);border:none;padding:.2rem .45rem;cursor:pointer;border-radius:1px;z-index:1;transition:all .15s;';
+    dlbtn.title = 'Unduh Video';
     dlbtn.onmouseover = () => dlbtn.style.background = 'var(--gold2)';
     dlbtn.onmouseout = () => dlbtn.style.background = 'rgba(212,168,67,.85)';
     
-    wrap.append(vid, lbl, dlbtn);
+    wrap.append(vid, lbl, durationSpan, dlbtn);
     stripPrev.appendChild(wrap);
   }
   
@@ -1784,7 +1951,11 @@ function showVideoPreview(videoDataUrl) {
   if (vid) {
     vid.src = videoDataUrl;
     vid.load();
-    // Auto-play preview
+    vid.onloadedmetadata = () => {
+      const duration = vid.duration.toFixed(1);
+      const durationSpan = wrap.querySelector('div:not(.vid-overlay-label):not(.vid-download-btn)');
+      if (durationSpan) durationSpan.textContent = `⏱️ ${duration}s`;
+    };
     vid.oncanplay = () => {
       vid.play().catch(e => console.log('Auto-play prevented:', e));
     };
@@ -1794,7 +1965,7 @@ function showVideoPreview(videoDataUrl) {
   if (dlbtn) {
     dlbtn.onclick = (e) => {
       e.stopPropagation();
-      dlUrl(videoDataUrl, 'raj-video.webm');
+      dlUrl(videoDataUrl, `raj-video-${Date.now()}.webm`);
       showToast('📥 Mengunduh video...');
     };
   }
