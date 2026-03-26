@@ -1360,42 +1360,122 @@ async function startMPLoop(){
 function stopMPLoop(){_mpRunning=false;_mpResults=null;}
 
 /* ═══════ VIDEO RECORDING ═══════ */
-let _preRecChunks=[], _preRecRecorder=null;
+let _preRecChunks = [], _preRecRecorder = null, _preRecStream = null;
 
-function startPreRecording(){
-  if(!S.stream||!S.autoRecord)return;
-  if(_preRecRecorder&&_preRecRecorder.state!=='inactive'){try{_preRecRecorder.stop();}catch{}}
-  _preRecChunks=[];
-  const mimeTypes=['video/webm;codecs=vp9','video/webm;codecs=vp8','video/webm','video/mp4'];
-  const mimeType=mimeTypes.find(t=>{try{return MediaRecorder.isTypeSupported(t);}catch{return false;}})||'video/webm';
-  try{
-    _preRecRecorder=new MediaRecorder(S.stream,{mimeType,videoBitsPerSecond:1500000});
-    _preRecRecorder.ondataavailable=e=>{if(e.data&&e.data.size>0)_preRecChunks.push(e.data);};
-    _preRecRecorder.start(200);
+function startPreRecording() {
+  if (!S.stream || !S.autoRecord) return;
+  
+  // Stop existing recorder
+  if (_preRecRecorder && _preRecRecorder.state !== 'inactive') {
+    try { _preRecRecorder.stop(); } catch(e) {}
+  }
+  
+  _preRecChunks = [];
+  
+  // Get supported mime type
+  const mimeTypes = [
+    'video/webm;codecs=vp9,opus',
+    'video/webm;codecs=vp8,opus', 
+    'video/webm;codecs=h264,opus',
+    'video/webm',
+    'video/mp4'
+  ];
+  
+  let mimeType = '';
+  for (let type of mimeTypes) {
+    if (MediaRecorder.isTypeSupported(type)) {
+      mimeType = type;
+      break;
+    }
+  }
+  
+  if (!mimeType) {
+    console.warn('No supported mime type found, using default');
+    mimeType = 'video/webm';
+  }
+  
+  try {
+    // Create a new MediaStream with only video track (avoid audio issues)
+    const videoTrack = S.stream.getVideoTracks()[0];
+    if (!videoTrack) throw new Error('No video track');
+    
+    const newStream = new MediaStream([videoTrack]);
+    
+    _preRecRecorder = new MediaRecorder(newStream, {
+      mimeType: mimeType,
+      videoBitsPerSecond: 2500000 // 2.5 Mbps for better quality
+    });
+    
+    _preRecRecorder.ondataavailable = (e) => {
+      if (e.data && e.data.size > 0) {
+        _preRecChunks.push(e.data);
+      }
+    };
+    
+    _preRecRecorder.onerror = (e) => {
+      console.error('Recorder error:', e);
+      showToast('⚠️ Gagal merekam video');
+    };
+    
+    // Record in 500ms chunks for better performance
+    _preRecRecorder.start(500);
     preRecBadge.classList.add('show');
     navRecInd.classList.add('on');
-  }catch(e){_preRecRecorder=null;}
+    
+  } catch (e) {
+    console.error('Failed to start recorder:', e);
+    showToast('⚠️ Tidak bisa merekam video: ' + e.message);
+    _preRecRecorder = null;
+  }
 }
 
-function stopPreRecording(){
-  return new Promise(res=>{
-    if(!_preRecRecorder||_preRecRecorder.state==='inactive'){res(null);return;}
-    const chunks=[..._preRecChunks];
-    _preRecRecorder.onstop=()=>{
-      const allChunks=[...chunks,..._preRecChunks.slice(chunks.length)];
-      if(allChunks.length){
-        const blob=new Blob(allChunks,{type:allChunks[0]?.type||'video/webm'});
-        const reader=new FileReader();
-        reader.onload=e=>{res(e.target.result);};
-        reader.onerror=()=>res(null);
-        reader.readAsDataURL(blob);
-      } else res(null);
+function stopPreRecording() {
+  return new Promise((resolve) => {
+    if (!_preRecRecorder || _preRecRecorder.state === 'inactive') {
+      resolve(null);
+      return;
+    }
+    
+    const chunks = [..._preRecChunks];
+    
+    _preRecRecorder.onstop = () => {
+      // Combine all chunks
+      const allChunks = [...chunks];
+      
+      if (allChunks.length === 0) {
+        resolve(null);
+        return;
+      }
+      
+      const blob = new Blob(allChunks, { 
+        type: allChunks[0]?.type || 'video/webm' 
+      });
+      
+      if (blob.size === 0) {
+        resolve(null);
+        return;
+      }
+      
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        resolve(reader.result);
+      };
+      reader.onerror = () => resolve(null);
+      reader.readAsDataURL(blob);
     };
-    _preRecRecorder.onerror=()=>res(null);
-    try{_preRecRecorder.stop();}catch{res(null);}
-    _preRecRecorder=null;
-    preRecBadge.classList.remove('show');
-    navRecInd.classList.remove('on');
+    
+    // Small delay to ensure last frames are captured
+    setTimeout(() => {
+      try {
+        _preRecRecorder.stop();
+      } catch(e) {
+        console.error('Error stopping recorder:', e);
+        resolve(null);
+      }
+      _preRecRecorder = null;
+      preRecBadge.classList.remove('show');
+      navRecInd.classList.remove('on');
+    }, 200);
   });
 }
 
@@ -1667,25 +1747,57 @@ function showStripPreview(url){
   el.onclick=()=>openLightboxDirect(url,S.currentVideoData);
 }
 
-function showVideoPreview(videoDataUrl){
-  if(!videoDataUrl)return;
-  let wrap=stripPrev.querySelector('.strip-vid-wrap');
-  if(!wrap){
-    wrap=document.createElement('div');wrap.className='strip-vid-wrap';
-    const lbl=document.createElement('div');lbl.className='vid-overlay-label';lbl.textContent='🎬 Video Sesi';
-    const vid=document.createElement('video');vid.className='strip-vid';vid.controls=true;vid.playsinline=true;vid.muted=false;vid.preload='metadata';vid.loop=true;
-    const dlbtn=document.createElement('button');dlbtn.className='vid-download-btn';dlbtn.textContent='⬇ Unduh';
-    dlbtn.onclick=()=>dlUrl(videoDataUrl,'raj-video.webm');
-    wrap.append(vid,lbl,dlbtn);
+function showVideoPreview(videoDataUrl) {
+  if (!videoDataUrl || videoDataUrl.length < 100) return;
+  
+  let wrap = stripPrev.querySelector('.strip-vid-wrap');
+  if (!wrap) {
+    wrap = document.createElement('div');
+    wrap.className = 'strip-vid-wrap';
+    wrap.style.cssText = 'width:100%;background:rgba(0,0,0,.6);border:1px solid rgba(212,168,67,.1);border-radius:2px;overflow:hidden;position:relative;margin-top:8px;';
+    
+    const lbl = document.createElement('div');
+    lbl.className = 'vid-overlay-label';
+    lbl.textContent = '🎬 Video Sesi';
+    lbl.style.cssText = 'position:absolute;bottom:4px;left:6px;font-size:.48rem;letter-spacing:.1em;text-transform:uppercase;color:rgba(255,255,255,.6);background:rgba(0,0,0,.5);padding:.15rem .35rem;border-radius:1px;z-index:1;';
+    
+    const vid = document.createElement('video');
+    vid.className = 'strip-vid';
+    vid.style.cssText = 'width:100%;max-height:120px;display:block;object-fit:cover;';
+    vid.controls = true;
+    vid.playsinline = true;
+    vid.muted = false;
+    vid.preload = 'metadata';
+    
+    const dlbtn = document.createElement('button');
+    dlbtn.className = 'vid-download-btn';
+    dlbtn.textContent = '⬇ Unduh';
+    dlbtn.style.cssText = 'position:absolute;top:5px;right:5px;font-size:.5rem;letter-spacing:.1em;text-transform:uppercase;color:var(--bg0);background:rgba(212,168,67,.85);border:none;padding:.2rem .45rem;cursor:pointer;border-radius:1px;z-index:1;transition:all .15s;';
+    dlbtn.onmouseover = () => dlbtn.style.background = 'var(--gold2)';
+    dlbtn.onmouseout = () => dlbtn.style.background = 'rgba(212,168,67,.85)';
+    
+    wrap.append(vid, lbl, dlbtn);
     stripPrev.appendChild(wrap);
   }
-  const vid=wrap.querySelector('video');
-  if(vid){
-    vid.src=videoDataUrl;
+  
+  const vid = wrap.querySelector('video');
+  if (vid) {
+    vid.src = videoDataUrl;
     vid.load();
+    // Auto-play preview
+    vid.oncanplay = () => {
+      vid.play().catch(e => console.log('Auto-play prevented:', e));
+    };
   }
-  const dlbtn=wrap.querySelector('.vid-download-btn');
-  if(dlbtn)dlbtn.onclick=()=>dlUrl(videoDataUrl,'raj-video.webm');
+  
+  const dlbtn = wrap.querySelector('.vid-download-btn');
+  if (dlbtn) {
+    dlbtn.onclick = (e) => {
+      e.stopPropagation();
+      dlUrl(videoDataUrl, 'raj-video.webm');
+      showToast('📥 Mengunduh video...');
+    };
+  }
 }
 
 function clearPrev(){
@@ -1832,38 +1944,55 @@ function renderGallery(){
 }
 
 /* ═══════ SHUTTER TRIGGER — FIX: proper async chain ═══════ */
-async function triggerShutter(){
-  if(S.shooting||!S.stream)return;
-  S.shooting=true;
-  shutterBtn.disabled=true;mShutter.disabled=true;
+/* ═══════ TRIGGER SHUTTER — IMPROVED VIDEO CAPTURE ═══════ */
+async function triggerShutter() {
+  if (S.shooting || !S.stream) return;
+  S.shooting = true;
+  shutterBtn.disabled = true;
+  mShutter.disabled = true;
 
-  // Start pre-recording
-  if(S.autoRecord){startPreRecording();}
+  // Start recording BEFORE countdown for better capture
+  if (S.autoRecord) {
+    startPreRecording();
+    await wait(100); // Give recorder time to initialize
+  }
 
   // Countdown
-  if(S.delay>0){
-    countdown.style.opacity='1';
-    for(let i=S.delay;i>0;i--){
-      countdown.textContent=i;
-      countdown.style.animation='none';void countdown.offsetWidth;
-      countdown.style.animation='countPop .95s ease forwards';
+  if (S.delay > 0) {
+    countdown.style.opacity = '1';
+    for (let i = S.delay; i > 0; i--) {
+      countdown.textContent = i;
+      countdown.style.animation = 'none';
+      void countdown.offsetWidth;
+      countdown.style.animation = 'countPop .95s ease forwards';
       await wait(950);
     }
-    countdown.textContent='';countdown.style.opacity='0';
+    countdown.textContent = '';
+    countdown.style.opacity = '0';
   }
 
+  // Capture photo
   capturePhoto();
 
-  // Give time for last frames to be recorded
-  await wait(1200);
-  if(S.autoRecord){
-    const videoData=await stopPreRecording();
-    if(videoData){
-      S.currentVideoData=videoData;
+  // Wait longer for video to capture the moment
+  await wait(2000);
+  
+  // Stop recording and save video
+  if (S.autoRecord) {
+    const videoData = await stopPreRecording();
+    if (videoData && videoData.length > 1000) { // Valid video data
+      S.currentVideoData = videoData;
       showVideoPreview(videoData);
       showToast('🎥 Video klip tersimpan!');
+    } else {
+      console.warn('Video data too small or invalid');
+      if (videoData) showToast('⚠️ Video terlalu pendek, coba lagi');
     }
   }
+
+  S.shooting = false;
+  shutterBtn.disabled = false;
+  mShutter.disabled = false;
 }
 
 /* ═══════ EDIT GALLERY ITEM ═══════ */
